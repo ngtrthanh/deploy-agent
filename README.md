@@ -1,87 +1,55 @@
 # deploy-agent
 
-A small, generic deployment reconciler for immutable container releases.
+Small native deployment reconciler for Docker/Compose hosts.
 
-`deploy-agent` does not trust a mutable tag, a running container, or HTTP 200 alone. A deployment is accepted only when the managed application reports the exact desired Git SHA from its own `/healthz` endpoint.
+**Vietnamese:** [README.vi.md](README.vi.md)
 
-## v0.1 scope
+## Download a prebuilt binary
 
-- desired release from local file or HTTP
-- full 40-character Git SHA as canonical identity
-- immutable image tag `sha-<first12>` by default
-- Docker Compose runtime
-- application `/healthz` verification
-- exact service + Git SHA matching
-- atomic accepted-state persistence
-- automatic rollback to the previous accepted release
-- `once`, `run`, and `check` commands
-- optional deploy-agent `/healthz` in long-running `run` mode
-- Linux systemd timer packaging
-- Windows Scheduled Task installer
-- dependency-free Go binary (standard library only)
+Linux / macOS:
 
-## Quick start
-
-The managed Compose file must use a deployment image variable:
-
-```yaml
-services:
-  app:
-    image: ${DEPLOY_IMAGE}
+```sh
+curl -fsSL https://raw.githubusercontent.com/ngtrthanh/deploy-agent/main/scripts/get.sh | sh
 ```
 
-Create a desired pointer containing the full Git SHA:
+Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/ngtrthanh/deploy-agent/main/scripts/get.ps1 | iex
+```
+
+Default channel is the rolling `edge` release built from `main`. Set `DA_VERSION=vX.Y.Z` to pin a stable release.
+
+Prebuilt targets: Linux `amd64/arm64/armv7/armv6/386`, Windows `amd64/arm64/386`, macOS `amd64/arm64`. Downloads are SHA-256 verified.
+
+## What it does
 
 ```text
-7bfe1179656431d785142ffb1afba3a6001a30f1
+desired release
+      ↓
+observe app
+      ↓
+drift? → pull → docker compose up
+      ↓
+verify app /healthz
+      ↓
+accept or rollback
 ```
 
-Copy `deploy-agent.example.json`, edit it, then:
+DA is a native binary, not a container. In production, run it as a short-lived one-shot job from the OS scheduler so reboot/crash recovery belongs to the OS, not to DA itself.
 
-```bash
-go build -o deploy-agent ./cmd/deploy-agent
-./deploy-agent -config deploy-agent.json check
-./deploy-agent -config deploy-agent.json once
+## Docker demo
+
+```sh
+mkdir -p bin
+go build -o bin/deploy-agent ./cmd/deploy-agent
+bash demo/run.sh
 ```
 
-For a daemon-style process:
+The demo starts a local registry, deploys v1, updates to v2, verifies the running app, then removes the demo containers, registry, images, and temporary state.
 
-```bash
-./deploy-agent -config deploy-agent.json run
-```
+GitHub Actions runs the same end-to-end demo on every push and pull request.
 
-## State machine
+## Current status
 
-```text
-CHECK DESIRED
-    |
-    +-- running SHA == desired SHA --> ACCEPT / NO-OP
-    |
-    v
-PULL IMMUTABLE IMAGE
-    |
-    v
-RECREATE SERVICE
-    |
-    v
-VERIFY APP /healthz
-    |
-    +-- exact SHA match --> ACCEPT + persist state
-    |
-    +-- failure --> ROLLBACK previous accepted SHA
-```
-
-## Contracts
-
-- [`docs/health-contract.md`](docs/health-contract.md) — minimum app-side `/healthz` contract.
-- [`docs/app-healthz-integration.md`](docs/app-healthz-integration.md) — how to add `/healthz` to Rust, Go, Python, Node, and .NET apps.
-- [`docs/deployment-contract.md`](docs/deployment-contract.md) — desired release, Compose, verification, and rollback contract.
-
-## Examples
-
-- [`examples/matflow.json`](examples/matflow.json)
-- [`examples/wsm-edge.json`](examples/wsm-edge.json)
-
-## Security rule
-
-The desired Git SHA must never be injected into the managed app at deployment time. The app must report a SHA baked into the artifact by CI; otherwise a wrong image could falsely claim the expected identity.
+v0.x currently uses Git SHA as deployment identity. The next core revision will adopt digest-pinned identity and the T1 reconciler rules from STD-CICD v2.
