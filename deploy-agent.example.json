@@ -1,0 +1,31 @@
+{
+  "app": "example-app",
+  "environment": "prod",
+  "instance": "host-01",
+  "image": "ghcr.io/example-org/example-app",
+  "desired": {
+    "source": "file",
+    "path": "/opt/example-app/deploy/prod.txt"
+  },
+  "runtime": {
+    "type": "docker-compose",
+    "compose_dir": "/opt/example-app",
+    "compose_file": "compose.yml",
+    "service": "app",
+    "image_env": "DEPLOY_IMAGE",
+    "image_env_value": "image"
+  },
+  "verify": {
+    "url": "http://127.0.0.1:8080/healthz",
+    "expected_service": "example-app",
+    "request_timeout_seconds": 5,
+    "startup_timeout_seconds": 60,
+    "retry_interval_seconds": 2
+  },
+  "state_file": ".deploy-agent-state.json",
+  "poll_seconds": 60,
+  "rollback": true,
+  "agent_health": {
+    "listen": "127.0.0.1:9187"
+  }
+}
