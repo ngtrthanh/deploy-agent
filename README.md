@@ -1,48 +1,87 @@
 # deploy-agent
 
-Generic deployment agent for immutable, Git-SHA-addressed application deployments across Linux and Windows environments.
+A small, generic deployment reconciler for immutable container releases.
 
-## Core rule
+`deploy-agent` does not trust a mutable tag, a running container, or HTTP 200 alone. A deployment is accepted only when the managed application reports the exact desired Git SHA from its own `/healthz` endpoint.
 
-`deploy-agent` does not decide that a deployment is healthy from a container tag or HTTP 200 alone. The managed application must expose a deployment-proof endpoint:
+## v0.1 scope
 
-```text
-GET /healthz
+- desired release from local file or HTTP
+- full 40-character Git SHA as canonical identity
+- immutable image tag `sha-<first12>` by default
+- Docker Compose runtime
+- application `/healthz` verification
+- exact service + Git SHA matching
+- atomic accepted-state persistence
+- automatic rollback to the previous accepted release
+- `once`, `run`, and `check` commands
+- optional deploy-agent `/healthz` in long-running `run` mode
+- Linux systemd timer packaging
+- Windows Scheduled Task installer
+- dependency-free Go binary (standard library only)
+
+## Quick start
+
+The managed Compose file must use a deployment image variable:
+
+```yaml
+services:
+  app:
+    image: ${DEPLOY_IMAGE}
 ```
 
-The agent deploys the desired immutable artifact, calls the application's `/healthz`, and accepts the deployment only when the application reports the expected `git_sha`.
+Create a desired pointer containing the full Git SHA:
 
 ```text
-desired SHA
-   ↓
-pull immutable artifact
-   ↓
-recreate / restart
-   ↓
-GET app:/healthz
-   ↓
-status == ok && git_sha == desired SHA
-   ↓
-ACCEPT
-
-otherwise
-   ↓
-ROLLBACK
+7bfe1179656431d785142ffb1afba3a6001a30f1
 ```
 
-See:
+Copy `deploy-agent.example.json`, edit it, then:
 
-- [Application health contract](docs/health-contract.md)
-- [How to add `/healthz` to an application](docs/app-healthz-integration.md)
+```bash
+go build -o deploy-agent ./cmd/deploy-agent
+./deploy-agent -config deploy-agent.json check
+./deploy-agent -config deploy-agent.json once
+```
 
-## Responsibility boundary
+For a daemon-style process:
 
-| Component | Responsibility |
-|---|---|
-| CI | test, lint, build immutable artifact |
-| Registry | store `sha-<git_sha>` artifacts |
-| Deployment control | define desired SHA per app/environment/instance |
-| deploy-agent | detect drift, deploy, verify, accept or rollback |
-| managed application | expose `/healthz` with its own runtime identity |
+```bash
+./deploy-agent -config deploy-agent.json run
+```
 
-The application's `/healthz` is the deployment proof. The agent may later expose its own health endpoint, but that only proves the agent itself is alive.
+## State machine
+
+```text
+CHECK DESIRED
+    |
+    +-- running SHA == desired SHA --> ACCEPT / NO-OP
+    |
+    v
+PULL IMMUTABLE IMAGE
+    |
+    v
+RECREATE SERVICE
+    |
+    v
+VERIFY APP /healthz
+    |
+    +-- exact SHA match --> ACCEPT + persist state
+    |
+    +-- failure --> ROLLBACK previous accepted SHA
+```
+
+## Contracts
+
+- [`docs/health-contract.md`](docs/health-contract.md) — minimum app-side `/healthz` contract.
+- [`docs/app-healthz-integration.md`](docs/app-healthz-integration.md) — how to add `/healthz` to Rust, Go, Python, Node, and .NET apps.
+- [`docs/deployment-contract.md`](docs/deployment-contract.md) — desired release, Compose, verification, and rollback contract.
+
+## Examples
+
+- [`examples/matflow.json`](examples/matflow.json)
+- [`examples/wsm-edge.json`](examples/wsm-edge.json)
+
+## Security rule
+
+The desired Git SHA must never be injected into the managed app at deployment time. The app must report a SHA baked into the artifact by CI; otherwise a wrong image could falsely claim the expected identity.

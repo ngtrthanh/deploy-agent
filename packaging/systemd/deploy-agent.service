@@ -1,0 +1,14 @@
+[Unit]
+Description=Deploy Agent one-shot reconciliation
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/deploy-agent -config /etc/deploy-agent/config.json once
+User=root
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt /var/lib/deploy-agent /etc/deploy-agent

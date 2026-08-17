@@ -1,0 +1,31 @@
+{
+  "app": "plantops-matflow",
+  "environment": "prod",
+  "instance": "inst4",
+  "image": "ghcr.io/ngtrthanh/plantops-matflow",
+  "desired": {
+    "source": "file",
+    "path": "/opt/plantops-matflow/deploy/prod.txt"
+  },
+  "runtime": {
+    "type": "docker-compose",
+    "compose_dir": "/opt/plantops-matflow",
+    "compose_file": "docker-compose-prod.yml",
+    "service": "matflow",
+    "image_env": "DEPLOY_IMAGE",
+    "image_env_value": "image"
+  },
+  "verify": {
+    "url": "http://127.0.0.1:8470/healthz",
+    "expected_service": "plantops-matflow",
+    "request_timeout_seconds": 5,
+    "startup_timeout_seconds": 60,
+    "retry_interval_seconds": 2
+  },
+  "state_file": ".deploy-agent-state.json",
+  "poll_seconds": 60,
+  "rollback": true,
+  "agent_health": {
+    "listen": "127.0.0.1:9187"
+  }
+}
