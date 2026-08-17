@@ -1,12 +1,33 @@
-# deploy-agent — hướng dẫn nhanh
+# deploy-agent
 
-`deploy-agent` (DA) là **một binary native rất nhỏ** chạy trên host. DA không chạy trong Docker; nó dùng Docker/Compose để giữ app đúng phiên bản mong muốn.
+Deployment reconciler gọn nhẹ cho host Docker Compose.
 
-## 1. Tải binary
+**English:** [README.md](README.md)
+
+DA được thiết kế theo nguyên tắc **một binary native trên mỗi host**, quản nhiều deployment unit. DA không chạy trong Docker, không cần mở cổng nhận kết nối vào, và production nên chạy dạng one-shot do scheduler của hệ điều hành gọi.
+
+```text
+host
+└── deploy-agent
+    ├── wsm-edge
+    ├── matflow
+    ├── cems-etl
+    └── hpr-traffic
+```
+
+Mục tiêu v0.2 rất đơn giản:
+
+```text
+Git nói NÊN chạy cái gì
+Docker nói ĐANG chạy cái gì
+DA làm cho hai bên bằng nhau
+```
+
+## Cài đặt
 
 Linux / macOS:
 
-```sh
+```bash
 curl -fsSL https://raw.githubusercontent.com/ngtrthanh/deploy-agent/main/scripts/get.sh | sh
 ```
 
@@ -16,77 +37,187 @@ Windows PowerShell:
 irm https://raw.githubusercontent.com/ngtrthanh/deploy-agent/main/scripts/get.ps1 | iex
 ```
 
-Mặc định tải rolling release `edge`. Muốn pin bản ổn định:
+Binary có sẵn cho Linux `amd64/arm64/armv7/armv6/386`, Windows `amd64/arm64/386`, macOS `amd64/arm64`. File tải về được kiểm SHA-256.
 
-```sh
-DA_VERSION=v0.2.0 sh scripts/get.sh
-```
+Kênh `edge` bám theo `main`. Production nên pin một release ổn định `vX.Y.Z`.
 
-```powershell
-$env:DA_VERSION="v0.2.0"; .\scripts\get.ps1
-```
+## Promotion: điều gì kích hoạt nâng cấp?
 
-Binary hiện được build sẵn trên GitHub cho:
+Repo source và quyền triển khai là hai việc tách nhau.
 
-- Linux: amd64, arm64, armv7, armv6, 386
-- Windows: amd64, arm64, 386
-- macOS: amd64, arm64
+| Repo | Trả lời câu hỏi |
+|---|---|
+| repo ứng dụng | Có những release nào? |
+| `deploy-state` | Release nào được phép chạy ở đâu? |
 
-Mỗi file được kiểm SHA-256 khi tải.
-
-## 2. DA làm gì?
+Một feature hoặc bug fix đi theo luồng:
 
 ```text
-desired version
-      ↓
-DA kiểm app đang chạy
-      ↓
-khác version → pull → docker compose up
-      ↓
-app /healthz đúng version → ACCEPT
-      ↓
-sai → rollback bản trước
+yêu cầu feature / fix bug
+    ↓
+source PR → CI → merge
+    ↓
+build image đúng một lần
+    ↓
+candidate image@sha256:BBBB
+    ↓
+promotion PR đổi desired digest AAAA → BBBB
+    ↓
+promotion PR được merge               ← trigger nâng cấp
+    ↓
+fleet DA polling và tự hội tụ
 ```
 
-Production nên chạy DA kiểu **one-shot** bằng scheduler của HĐH:
+Không cần webhook. Rollback đi đúng con đường đó: promote lại digest đã chạy tốt trước đây.
 
-- Linux: systemd timer
-- Windows: Task Scheduler
-- macOS: launchd (sẽ bổ sung installer)
+Ví dụ desired state:
 
-Vì scheduler gọi lại DA định kỳ, DA tự sống lại sau reboot/crash mà không cần một daemon riêng.
-
-## 3. Chạy demo Docker
-
-Máy có Docker + Go:
-
-```sh
-mkdir -p bin
-go build -o bin/deploy-agent ./cmd/deploy-agent
-bash demo/run.sh
+```json
+{
+  "apiVersion": "deploy/v1",
+  "kind": "Release",
+  "metadata": {
+    "service": "wsm-edge",
+    "environment": "edge-prod"
+  },
+  "spec": {
+    "image": "ghcr.io/example/wsm-edge-server",
+    "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "rollout": { "strategy": "recreate" },
+    "migration": { "required": false }
+  },
+  "provenance": {
+    "git_sha": "1111111111111111111111111111111111111111"
+  }
+}
 ```
 
-Demo tự làm đủ vòng:
+`spec.digest` là identity chuẩn để triển khai. Tag chỉ phục vụ đọc và tìm kiếm.
+
+## Kiểm chứng mà không cần sửa app
+
+DA không được ép mọi ứng dụng phải cấy endpoint riêng cho DA.
+
+Artifact identity được chứng minh từ runtime ngay trên host:
 
 ```text
-start local registry
-→ build app v1
-→ DA deploy v1
-→ build/publish v2
-→ DA update v2
-→ verify /healthz
-→ docker compose down
-→ xóa registry + temp state
+desired image@sha256:BBBB
+        ↓
+docker pull theo digest
+        ↓
+docker compose recreate
+        ↓
+docker inspect container đang chạy
+        ↓
+artifact đang chạy == artifact mong muốn
 ```
 
-GitHub Actions chạy demo này trên mọi push/PR để bảo đảm luồng deploy thực sự hoạt động và cleanup sạch.
+Readiness của ứng dụng là một probe tách riêng. v0.2 nên hỗ trợ:
 
-## 4. File chính
+```text
+http          /health, /healthz hoặc URL sẵn có
+docker-health Docker HEALTHCHECK
+command       lệnh kiểm tra service
+tcp           thử kết nối cổng
+process       container đang chạy và ổn định
+```
 
-- `scripts/get.sh`, `scripts/get.ps1`: tải đúng binary theo OS/CPU.
-- `packaging/systemd/`: chạy survive reboot trên Linux.
-- `scripts/install-windows.ps1`: Task Scheduler trên Windows.
-- `demo/`: Docker app demo end-to-end.
-- `docs/`: deployment và `/healthz` contract.
+Ứng dụng DA-aware có thể bổ sung `/healthz`, `/readyz` và `/api/ops/identity`. Các endpoint này cho bằng chứng ở tầng ứng dụng và observability tốt hơn, nhưng là **tùy chọn**, không phải điều kiện để DA quản ứng dụng.
 
-> DA hiện là v0.x. Bước tiếp theo là chuyển canonical deployment identity từ Git SHA sang image digest theo STD-CICD v2.
+### Ví dụ WSM Edge: không sửa app
+
+Nếu WSM Edge hiện đã có `GET /health`, DA có thể nâng cấp mà không sửa source:
+
+```text
+desired digest BBBB
+    ↓
+current digest AAAA
+    ↓
+backup hook
+    ↓
+pull image@BBBB
+    ↓
+Compose override pin image@BBBB
+    ↓
+force-recreate đúng service cần nâng
+    ↓
+Docker artifact proof
+    +
+/health hiện có == 200
+    ↓
+ACCEPT BBBB
+```
+
+Nếu kiểm chứng thất bại và deployment đó không chạy migration, DA quay lại digest đã được accept trước đó.
+
+## Reconciliation
+
+Production khuyến nghị:
+
+```text
+OS scheduler mỗi 30–60 giây
+        ↓
+deploy-agent reconcile
+        ↓
+scan các deployment unit
+        ↓
+đọc desired → đo actual → hội tụ
+        ↓
+exit
+```
+
+Mô hình này sống qua reboot và crash vì hệ điều hành sẽ gọi lại DA. Nếu nguồn desired state lỗi, DA không được động vào service đang chạy tốt.
+
+Một reconciliation hoàn chỉnh cần có: lock theo deployment unit, timeout cho mọi command/wait, exponential backoff có jitter, giới hạn số lần thử, last-run status bền vững và cache desired state last-known-good.
+
+## Một DA, nhiều deployment unit
+
+Bố cục host mục tiêu:
+
+```text
+/etc/deploy-agent/
+├── agent.json
+└── apps/
+    ├── wsm-edge.json
+    ├── matflow.json
+    └── hpr-traffic.json
+```
+
+Windows dùng cùng mô hình dưới `C:\ProgramData\deploy-agent\`.
+
+Lock phải theo deployment unit để một app deploy lâu không khóa các app khác trên cùng host.
+
+## Lệnh
+
+CLI hiện tại:
+
+```bash
+deploy-agent -config deploy-agent.json once
+deploy-agent -config deploy-agent.json check
+deploy-agent -config deploy-agent.json run
+deploy-agent -version
+```
+
+`once` là kiểu chạy production được khuyến nghị. Fleet/multi-unit orchestration là phần việc v0.2 và chưa được nối vào CLI hiện tại.
+
+## Trạng thái nhánh v0.2
+
+`feature/v0.2-digest-reconciler` là nhánh đang migrate, chưa phải release. Các lớp thấp đang được chuyển từ identity theo Git-SHA/tag sang digest và verification tách lớp. Phần wiring phía trên, fleet mode, generic probes, retry policy, locking, desired-state cache và demo/docs migration vẫn đang làm.
+
+Ở head hiện tại, GitHub CI dừng tại bước `gofmt` trước khi chạy vet/test/build. Không coi nhánh này production-ready cho tới khi CI và Docker E2E demo xanh trở lại.
+
+## Demo
+
+`demo/` hiện vẫn chứng minh end-to-end flow của v0.1. Trước khi v0.2 merge vào `main`, demo phải được chuyển sang `deploy/v1`, deploy pin bằng digest, generic verification, upgrade, rollback và teardown sạch.
+
+## Nguyên tắc thiết kế
+
+- Một DA binary trên mỗi host, không phải một DA cho mỗi container.
+- Một deployment unit có thể chứa một hoặc nhiều Compose service.
+- Digest là deployment identity; Git SHA là provenance.
+- Promotion là thay đổi desired state trong Git, không phải command chạy trên host.
+- Artifact proof từ runtime không phụ thuộc việc app tự khai digest của nó.
+- App hiện hữu vẫn có thể được DA quản mà không sửa source nếu có probe phù hợp.
+- Endpoint DA-aware là bằng chứng mạnh hơn nhưng không bắt buộc.
+- Production bình thường chạy one-shot bằng scheduler của hệ điều hành.
+- Lỗi khi đọc desired state không được làm ảnh hưởng service đang được accept và chạy tốt.
